@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Whiteboard</title>
+    <style>
+        body {
+            margin: 0;
+            background: #f0f0f0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        #whiteboard {
+            background: #fff;
+            border: 2px solid #ccc;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            cursor: crosshair;
+            touch-action: none;
+        }
+        .toolbar {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #fff;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            padding: 8px 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            display: flex;
+            gap: 10px;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div class="toolbar">
+        <label>Color: <input type="color" id="color" value="#222222"></label>
+        <label>Size: <input type="range" id="size" min="2" max="20" value="4"></label>
+        <select id="tool">
+            <option value="draw">Free Draw</option>
+            <option value="line">Line</option>
+            <option value="rect">Rectangle</option>
+            <option value="circle">Circle</option>
+            <option value="oval">Oval</option>
+            <option value="select">Select</option>
+            <option value="eraser">Eraser</option>
+        </select>
+        <label>
+            Board Size:
+            <select id="boardSize">
+                <option value="900x600">900x600</option>
+                <option value="1200x800">1200x800</option>
+                <option value="600x400">600x400</option>
+                <option value="400x300">400x300</option>
+            </select>
+        </label>
+        <button id="copy">Copy</button>
+        <button id="cut">Cut</button>
+        <button id="paste">Paste</button>
+        <button id="clear">Clear</button>
+    </div>
+    <canvas id="whiteboard" width="900" height="600"></canvas>
+    <script>
+        const canvas = document.getElementById('whiteboard');
+        const ctx = canvas.getContext('2d');
+        const colorPicker = document.getElementById('color');
+        const sizePicker = document.getElementById('size');
+        const clearBtn = document.getElementById('clear');
+        const toolPicker = document.getElementById('tool');
+        const boardSize = document.getElementById('boardSize');
+
+        let drawing = false;
+        let lastX = 0, lastY = 0;
+        let startX = 0, startY = 0;
+        let tempImage = null;
+        let selection = null;
+        let clipboard = null;
+        let moving = false;
+        let moveOffset = {x: 0, y: 0};
+
+        function getPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            if (e.touches) {
+                return [
+                    e.touches[0].clientX - rect.left,
+                    e.touches[0].clientY - rect.top
+                ];
+            } else {
+                return [
+                    e.clientX - rect.left,
+                    e.clientY - rect.top
+                ];
+            }
+        }
+
+        function drawSelectionRect(rect) {
+            if (!rect) return;
+            ctx.save();
+            ctx.strokeStyle = "#007bff";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([6, 4]);
+            ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+            ctx.setLineDash([]);
+            ctx.restore();
+        }
+
+        // Selection logic
+        let selecting = false;
+        let selectRect = null;
+
+        // Update startDraw to support moving selection
+        function startDraw(e) {
+            if (toolPicker.value === "select") {
+                const [x, y] = getPos(e);
+                // If there is a selection and click is outside, remove selection and redraw
+                if (
+                    selection &&
+                    !(x >= selection.x && x <= selection.x + selection.w &&
+                      y >= selection.y && y <= selection.y + selection.h)
+                ) {
+                    selection = null;
+                    ctx.putImageData(tempImage || ctx.getImageData(0, 0, canvas.width, canvas.height), 0, 0);
+                    // Do not start selecting or moving
+                    return;
+                }
+                // If click is inside selection, start moving
+                if (
+                    selection &&
+                    x >= selection.x && x <= selection.x + selection.w &&
+                    y >= selection.y && y <= selection.y + selection.h
+                ) {
+                    moving = true;
+                    moveOffset.x = x - selection.x;
+                    moveOffset.y = y - selection.y;
+                    tempImage = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    updateCursor();
+                } else {
+                    // Start new selection
+                    selecting = true;
+                    [startX, startY] = [x, y];
+                    selectRect = { x: startX, y: startY, w: 0, h: 0 };
+                    tempImage = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                }
+            } else if (toolPicker.value === "draw" || toolPicker.value === "eraser") {
+                drawing = true;
+                [lastX, lastY] = getPos(e);
+                [startX, startY] = [lastX, lastY];
+            } else {
+                drawing = true;
+                [lastX, lastY] = getPos(e);
+                [startX, startY] = [lastX, lastY];
+                tempImage = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            }
+        }
+
+        // Update draw to support moving selection
+        function draw(e) {
+            if (toolPicker.value === "select") {
+                const [x, y] = getPos(e);
+                if (moving && selection && tempImage) {
+                    ctx.putImageData(tempImage, 0, 0);
+                    // Draw the selected area at new position
+                    ctx.putImageData(
+                        clipboard,
+                        x - moveOffset.x,
+                        y - moveOffset.y
+                    );
+                    // Draw selection rectangle at new position
+                    drawSelectionRect({
+                        x: x - moveOffset.x,
+                        y: y - moveOffset.y,
+                        w: selection.w,
+                        h: selection.h
+                    });
+                } else if (selecting) {
+                    selectRect.w = x - selectRect.x;
+                    selectRect.h = y - selectRect.y;
+                    ctx.putImageData(tempImage, 0, 0);
+                    drawSelectionRect(selectRect);
+                }
+            } else {
+                if (!drawing) return;
+                if (toolPicker.value === "draw") {
+                    const [x, y] = getPos(e);
+                    ctx.strokeStyle = colorPicker.value;
+                    ctx.lineWidth = sizePicker.value;
+                    ctx.lineCap = 'round';
+                    ctx.beginPath();
+                    ctx.moveTo(lastX, lastY);
+                    ctx.lineTo(x, y);
+                    ctx.stroke();
+                    [lastX, lastY] = [x, y];
+                } else if (toolPicker.value === "eraser") {
+                    const [x, y] = getPos(e);
+                    ctx.save();
+                    ctx.globalCompositeOperation = "destination-out";
+                    ctx.strokeStyle = "rgba(0,0,0,1)";
+                    ctx.lineWidth = sizePicker.value;
+                    ctx.lineCap = 'round';
+                    ctx.beginPath();
+                    ctx.moveTo(lastX, lastY);
+                    ctx.lineTo(x, y);
+                    ctx.stroke();
+                    ctx.globalCompositeOperation = "source-over";
+                    ctx.restore();
+                    [lastX, lastY] = [x, y];
+                } else {
+                    drawShape(e, false);
+                }
+            }
+        }
+
+        // Update endDraw to support moving selection
+        function endDraw(e) {
+            if (toolPicker.value === "select") {
+                if (moving && selection && clipboard) {
+                    const [x, y] = getPos(e);
+                    // Clear the old area
+                    ctx.putImageData(tempImage, 0, 0);
+                    ctx.clearRect(selection.x, selection.y, selection.w, selection.h);
+                    // Draw the clipboard at new position
+                    ctx.putImageData(
+                        clipboard,
+                        x - moveOffset.x,
+                        y - moveOffset.y
+                    );
+                    // Update selection to new position
+                    selection.x = x - moveOffset.x;
+                    selection.y = y - moveOffset.y;
+                    moving = false;
+                    drawSelectionRect(selection);
+                } else if (selecting) {
+                    selecting = false;
+                    selection = {
+                        x: Math.min(selectRect.x, selectRect.x + selectRect.w),
+                        y: Math.min(selectRect.y, selectRect.y + selectRect.h),
+                        w: Math.abs(selectRect.w),
+                        h: Math.abs(selectRect.h)
+                    };
+                    // Save clipboard for moving
+                    if (selection.w > 0 && selection.h > 0) {
+                        clipboard = ctx.getImageData(selection.x, selection.y, selection.w, selection.h);
+                    }
+                    ctx.putImageData(tempImage, 0, 0);
+                    drawSelectionRect(selection);
+                }
+            } else {
+                if (!drawing) return;
+                if (toolPicker.value !== "draw" && toolPicker.value !== "eraser") {
+                    drawShape(e, true);
+                }
+                drawing = false;
+            }
+        }
+
+        function drawShape(e, commit) {
+            if (!drawing) return;
+            const [x, y] = getPos(e);
+            ctx.putImageData(tempImage, 0, 0);
+            ctx.strokeStyle = colorPicker.value;
+            ctx.lineWidth = sizePicker.value;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            if (toolPicker.value === "line") {
+                ctx.moveTo(startX, startY);
+                ctx.lineTo(x, y);
+            } else if (toolPicker.value === "rect") {
+                ctx.rect(startX, startY, x - startX, y - startY);
+            } else if (toolPicker.value === "circle") {
+                const radius = Math.sqrt(Math.pow(x - startX, 2) + Math.pow(y - startY, 2));
+                ctx.arc(startX, startY, radius, 0, 2 * Math.PI);
+            } else if (toolPicker.value === "oval") {
+                // Draw an oval using ellipse()
+                ctx.ellipse(
+                    (startX + x) / 2, // centerX
+                    (startY + y) / 2, // centerY
+                    Math.abs((x - startX) / 2), // radiusX
+                    Math.abs((y - startY) / 2), // radiusY
+                    0, 0, 2 * Math.PI
+                );
+            }
+            ctx.stroke();
+            if (commit) tempImage = null;
+        }
+
+        // Copy, Cut, Paste
+        document.getElementById('copy').onclick = function() {
+            if (selection && selection.w > 0 && selection.h > 0) {
+                clipboard = ctx.getImageData(selection.x, selection.y, selection.w, selection.h);
+            }
+        };
+        document.getElementById('cut').onclick = function() {
+            if (selection && selection.w > 0 && selection.h > 0) {
+                clipboard = ctx.getImageData(selection.x, selection.y, selection.w, selection.h);
+                ctx.clearRect(selection.x, selection.y, selection.w, selection.h);
+                selection = null;
+            }
+        };
+        document.getElementById('paste').onclick = function() {
+            if (clipboard) {
+                ctx.putImageData(clipboard, 10, 10);
+            }
+        };
+
+        canvas.addEventListener('mousedown', startDraw);
+        canvas.addEventListener('touchstart', startDraw);
+
+        canvas.addEventListener('mousemove', draw);
+        canvas.addEventListener('touchmove', function(e) {
+            draw(e);
+            e.preventDefault();
+        }, { passive: false });
+
+        canvas.addEventListener('mouseup', endDraw);
+        canvas.addEventListener('mouseleave', endDraw);
+        canvas.addEventListener('touchend', endDraw);
+
+        clearBtn.onclick = () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            selection = null;
+        };
+
+        boardSize.addEventListener('change', function() {
+            const temp = canvas.toDataURL();
+            const [w, h] = this.value.split('x').map(Number);
+            canvas.width = w;
+            canvas.height = h;
+            const img = new window.Image();
+            img.onload = function() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(img, 0, 0, w, h);
+            };
+            img.src = temp;
+            selection = null;
+        });
+
+        // --- Enhancement: Change cursor for eraser, select, free draw, and moving selection ---
+        function updateCursor() {
+            if (toolPicker.value === "eraser") {
+                canvas.style.cursor = "cell";
+            } else if (toolPicker.value === "select") {
+                if (moving) {
+                    canvas.style.cursor = "move"; // Arrow with move icon when moving selection
+                } else {
+                    canvas.style.cursor = "crosshair";
+                }
+            } else if (toolPicker.value === "draw") {
+                canvas.style.cursor = "url('https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6/svgs/solid/pencil-alt.svg') 0 16, pointer";
+            } else {
+                canvas.style.cursor = "crosshair";
+            }
+        }
+        toolPicker.addEventListener('change', updateCursor);
+
+        // Set initial cursor on page load
+        updateCursor();
+
+        // Change cursor to arrow (move) when moving selection
+        canvas.addEventListener('mousedown', function(e) {
+            if (toolPicker.value === "select") {
+                const [x, y] = getPos(e);
+                if (
+                    selection &&
+                    x >= selection.x && x <= selection.x + selection.w &&
+                    y >= selection.y && y <= selection.y + selection.h
+                ) {
+                    moving = true;
+                    updateCursor();
+                }
+            }
+        });
+        canvas.addEventListener('mouseup', function(e) {
+            if (moving) {
+                moving = false;
+                updateCursor();
+            }
+        });
+
+        // Remove selection rectangle when clicking outside selection (on canvas)
+        canvas.addEventListener('mousedown', function(e) {
+            if (toolPicker.value === "select") {
+                const [x, y] = getPos(e);
+                // If there is a selection and click is outside, remove selection and redraw
+                if (
+                    selection &&
+                    !(x >= selection.x && x <= selection.x + selection.w &&
+                      y >= selection.y && y <= selection.y + selection.h)
+                ) {
+                    selection = null;
+                    ctx.putImageData(tempImage || ctx.getImageData(0, 0, canvas.width, canvas.height), 0, 0);
+                    // Do not start selecting or moving
+                    return;
+                }
+                // If click is inside selection, start moving
+                if (
+                    selection &&
+                    x >= selection.x && x <= selection.x + selection.w &&
+                    y >= selection.y && y <= selection.y + selection.h
+                ) {
+                    moving = true;
+                    moveOffset.x = x - selection.x;
+                    moveOffset.y = y - selection.y;
+                    tempImage = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    updateCursor();
+                } else {
+                    // Start new selection
+                    selecting = true;
+                    [startX, startY] = [x, y];
+                    selectRect = { x: startX, y: startY, w: 0, h: 0 };
+                    tempImage = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                }
+            }
+        });
+    </script>
+</body>
+</html>
